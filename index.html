@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>OneLove: 3D Anime Life Simulator</title>
+<style>
+  body, html { margin: 0; padding: 0; overflow: hidden; background: #000; font-family: sans-serif; user-select: none; }
+  #canvas-container { width: 100vw; height: 100vh; display: block; }
+  #joystick-zone { position: absolute; bottom: 30px; left: 30px; width: 120px; height: 120px; background: rgba(255,255,255,0.15); border-radius: 50%; touch-action: none; border: 2px solid rgba(255,255,255,0.3); z-index: 50; }
+  #joystick-knob { position: absolute; top: 35px; left: 35px; width: 50px; height: 50px; background: rgba(255,105,180,0.85); border-radius: 50%; }
+  #action-menu { position: absolute; right: 20px; bottom: 30px; display: none; flex-direction: column; gap: 8px; max-height: 65vh; overflow-y: auto; z-index: 100; }
+  .action-btn { background: rgba(15, 15, 25, 0.9); color: #ffb6c1; border: 1px solid #ff69b4; padding: 10px 16px; border-radius: 20px; font-size: 13px; font-weight: bold; box-shadow: 0 4px 10px rgba(0,0,0,0.6); }
+  .action-btn:active { background: #ff69b4; color: #fff; }
+  #mp-modal { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 200; color: white; }
+  .mp-card { background: #1a1a2e; padding: 25px; border-radius: 16px; border: 2px solid #ff69b4; text-align: center; width: 85%; max-width: 320px; }
+  .mp-input { width: 80%; padding: 10px; margin: 15px 0; border-radius: 8px; border: 1px solid #ff69b4; text-align: center; font-size: 18px; font-weight: bold; outline: none; }
+  .mp-btn { background: #ff69b4; color: white; border: none; padding: 10px 20px; border-radius: 20px; font-weight: bold; font-size: 14px; cursor: pointer; width: 90%; margin: 5px 0; }
+  #hud { position: absolute; top: 12px; left: 12px; color: white; font-size: 12px; z-index: 60; background: rgba(0,0,0,0.6); padding: 5px 10px; border-radius: 8px; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+</head>
+<body>
+<div id="mp-modal">
+  <div class="mp-card">
+    <h2 style="margin: 0 0 10px 0; color: #ff69b4;">OneLove 3D</h2>
+    <p style="font-size: 13px; color: #aaa;">Dono phone me same Room Code daalein</p>
+    <input type="text" id="room-code-input" class="mp-input" placeholder="e.g. 1234" value="1234">
+    <button class="mp-btn" onclick="startHost()">Host Ban Kar Shuru Karein</button>
+    <button class="mp-btn" style="background: #4a69bd;" onclick="joinPartner()">Partner Ke Phone Se Judein</button>
+  </div>
+</div>
+<div id="hud">Status: Waiting to Connect...</div>
+<div id="canvas-container"></div>
+<div id="joystick-zone"><div id="joystick-knob"></div></div>
+<div id="action-menu"></div>
+<script>
+let scene, camera, renderer, clock, player, partnerMesh, bedZone, vehicleZone, peer = null, conn = null;
+const moveState = { forward: 0, right: 0 };
+function initGame() {
+  document.getElementById('mp-modal').style.display = 'none';
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xdcecf8);
+  scene.fog = new THREE.FogExp2(0xdcecf8, 0.012);
+  clock = new THREE.Clock();
+  camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+  camera.position.set(0, 5, 8);
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  document.getElementById('canvas-container').appendChild(renderer.domElement);
+  const ambient = new THREE.AmbientLight(0xffffff, 0.7);
+  scene.add(ambient);
+  const sun = new THREE.DirectionalLight(0xfffaed, 1.2);
+  sun.position.set(20, 40, 20);
+  sun.castShadow = true;
+  sun.shadow.mapSize.width = 1024;
+  sun.shadow.mapSize.height = 1024;
+  scene.add(sun);
+  buildEnvironment();
+  buildCharacters();
+  setupTouchControls();
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+  animate();
+}
+function buildCharacters() {
+  player = createHumanModel(0x2d5584);
+  player.position.set(0, 0, 0);
+  scene.add(player);
+  partnerMesh = createHumanModel(0xd64d75);
+  partnerMesh.position.set(2, 0, -2);
+  scene.add(partnerMesh);
+}
+function createHumanModel(shirtColor) {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshToonMaterial({ color: shirtColor });
+  const skin = new THREE.MeshToonMaterial({ color: 0xffdfd0 });
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.22, 1.0, 16), mat);
+  body.position.y = 1.3;
+  body.castShadow = true;
+  g.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.25, 16, 16), skin);
+  head.position.y = 0.7;
+  head.castShadow = true;
+  body.add(head);
+  const lLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.07, 0.8, 8), mat);
+  lLeg.position.set(-0.16, -0.9, 0);
+  lLeg.castShadow = true;
+  body.add(lLeg);
+  const rLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.07, 0.8, 8), mat);
+  rLeg.position.set(0.16, -0.9, 0);
+  rLeg.castShadow = true;
+  body.add(rLeg);
+  g.userData = { body, lLeg, rLeg };
+  return g;
+}
+function buildEnvironment() {
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(100, 100), new THREE.MeshStandardMaterial({ color: 0x30343a }));
+  floor.rotation.x = -Math.PI / 2;
+  floor.receiveShadow = true;
+  scene.add(floor);
+  bedZone = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.5, 3.5), new THREE.MeshStandardMaterial({ color: 0xffffff }));
+  bedZone.position.set(-6, 0.25, -4);
+  bedZone.castShadow = true;
+  bedZone.receiveShadow = true;
+  scene.add(bedZone);
+  vehicleZone = new THREE.Mesh(new THREE.BoxGeometry(2.2, 1.2, 4), new THREE.MeshStandardMaterial({ color: 0xaa1111 }));
+  vehicleZone.position.set(6, 0.6, 4);
+  vehicleZone.castShadow = true;
+  scene.add(vehicleZone);
+}
+function startHost() {
+  const code = document.getElementById('room-code-input').value.trim() || '1234';
+  peer = new Peer('onelove-room-' + code);
+  peer.on('open', () => {
+    document.getElementById('hud').innerText = `Host Active | Room: ${code} | Waiting for Partner...`;
+    initGame();
+  });
+  peer.on('connection', (c) => {
+    conn = c;
+    setupDataSync();
+    document.getElementById('hud').innerText = `Partner Connected! Live.`;
+  });
+}
+function joinPartner() {
+  const code = document.getElementById('room-code-input').value.trim() || '1234';
+  peer = new Peer();
+  peer.on('open', () => {
+    conn = peer.connect('onelove-room-' + code);
+    setupDataSync();
+    document.getElementById('hud').innerText = `Connected to Room: ${code}`;
+    initGame();
+  });
+}
+function setupDataSync() {
+  conn.on('data', (data) => {
+    if (data.type === 'move') {
+      partnerMesh.position.set(data.x, data.y, data.z);
+    }
+    if (data.type === 'action') {
+      document.getElementById('hud').innerText = `Partner: ${data.name}`;
+    }
+  });
+}
+function updateContextTriggers() {
+  const menu = document.getElementById('action-menu');
+  let actions = [];
+  if (player.position.distanceTo(partnerMesh.position) < 2.5) {
+    actions.push("Romantic Eye Contact", "Warm Hug", "Hold Hands", "Kiss", "Intimate Romance");
+  }
+  if (player.position.distanceTo(bedZone.position) < 2.5) {
+    actions.push("Sit on Bed", "Single Leg Up", "Sleep Peacefully", "Cuddle");
+  }
+  if (player.position.distanceTo(vehicleZone.position) < 3.0) {
+    actions.push("Drive Car Together", "Drift Mode", "Play Love Song");
+  }
+  actions.push("Relieve Body Itch", "Hygiene & Wash");
+  if (actions.length === 0) {
+    menu.style.display = 'none';
+  } else {
+    menu.style.display = 'flex';
+    menu.innerHTML = actions.map(a => `<button class="action-btn" onclick="triggerAction('${a}')">${a}</button>`).join('');
+  }
+}
+function triggerAction(actionName) {
+  document.getElementById('hud').innerText = `Action: ${actionName}`;
+  if (conn && conn.open) conn.send({ type: 'action', name: actionName });
+}
+function setupTouchControls() {
+  const zone = document.getElementById('joystick-zone');
+  const knob = document.getElementById('joystick-knob');
+  let sX, sY;
+  zone.addEventListener('touchstart', (e) => { sX = e.touches[0].clientX; sY = e.touches[0].clientY; });
+  zone.addEventListener('touchmove', (e) => {
+    const t = e.touches[0];
+    const dx = t.clientX - sX, dy = t.clientY - sY;
+    const dist = Math.min(Math.hypot(dx, dy), 40);
+    const angle = Math.atan2(dy, dx);
+    knob.style.transform = `translate(${Math.cos(angle)*dist}px, ${Math.sin(angle)*dist}px)`;
+    moveState.forward = -Math.sin(angle) * (dist / 40);
+    moveState.right = Math.cos(angle) * (dist / 40);
+  });
+  zone.addEventListener('touchend', () => {
+    knob.style.transform = `translate(0px, 0px)`;
+    moveState.forward = 0; moveState.right = 0;
+  });
+}
+function animate() {
+  requestAnimationFrame(animate);
+  const delta = clock.getDelta();
+  if (Math.abs(moveState.forward) > 0.05 || Math.abs(moveState.right) > 0.05) {
+    player.position.x += moveState.right * delta * 5;
+    player.position.z -= moveState.forward * delta * 5;
+    const t = clock.getElapsedTime() * 10;
+    player.userData.lLeg.rotation.x = Math.sin(t) * 0.5;
+    player.userData.rLeg.rotation.x = -Math.sin(t) * 0.5;
+    if (conn && conn.open) conn.send({ type: 'move', x: player.position.x, y: player.position.y, z: player.position.z });
+  }
+  camera.position.x = player.position.x;
+  camera.position.z = player.position.z + 7;
+  camera.lookAt(player.position.x, player.position.y + 1, player.position.z);
+  updateContextTriggers();
+  renderer.render(scene, camera);
+}
+</script>
+</body>
+</html>
